@@ -1,0 +1,14 @@
+{
+  "name": "clawdpet",
+  "displayName": "Clawdpet",
+  "version": "0.1.0",
+  "description": "Handheld Claude pet that mirrors session state and approves tool calls from an ESPHome device",
+  "author": { "name": "clawdpet" },
+  "mcpServers": {
+    "clawdpet": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/channel.mjs"]
+    }
+  },
+  "channels": [{ "server": "clawdpet", "displayName": "Clawdpet" }]
+}

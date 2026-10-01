@@ -1,0 +1,6 @@
+node_modules/
+.DS_Store
+# per-Mac secrets live in ~/.clawdpet, never here
+secrets.yaml
+*.env
+build/

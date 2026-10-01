@@ -1,0 +1,808 @@
+esphome:
+  name: protobadge
+  on_boot:
+    priority: -100
+    then:
+      - light.turn_on:
+          id: neopixels
+          brightness: 40%
+          effect: Clawd
+
+esp32:
+  board: esp32-c6-devkitc-1
+  variant: esp32c6
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+
+logger:
+  level: INFO
+
+wifi:
+  # the C6 radio is 2.4 GHz only; the first network is the 2.4 GHz one
+  networks:
+    - ssid: "__WIFI_SSID_24__"
+      password: "__WIFI_PASSWORD__"
+    - ssid: "__WIFI_SSID_5__"
+      password: "__WIFI_PASSWORD__"
+
+mqtt:
+  broker: mqtt-cloud.vento.build
+  port: 1883
+  username: protobadge
+  password: !secret vento_mqtt_password
+  topic_prefix: jonathan9879/devices/protobadge
+  discovery: false
+
+external_components:
+  - source: github://Protofy-xyz/esphome-components@main
+    components: [vento]
+
+vento:
+  board: esp32-c6-touch-lcd-1-47
+
+debug:
+  update_interval: 30s
+
+# Firmware updates over WiFi from `firmware/flash.sh`; the password gates who
+# may replace the firmware, so it is as sensitive as the API key.
+ota:
+  - platform: esphome
+    password: "__OTA_PASSWORD__"
+
+# ---------------------------------------------------------------- hub link
+# The Mac-side hub is the only client: it pushes screens with `show` and
+# reads button decisions from `pet_verdict`. Noise encryption authenticates
+# both ends, so nothing else on the LAN can drive approvals.
+api:
+  reboot_timeout: 0s
+  encryption:
+    key: "__API_KEY__"
+  actions:
+    # mode: 0 idle, 1 busy, 2 waiting, 3 done, 4 permission prompt,
+    #       5 choice, 6 sessions menu
+    - action: show
+      variables:
+        mode: int
+        token: string
+        label: string
+        title: string
+        body: string
+        opts: string
+        full: bool
+      then:
+        - lambda: |-
+            const uint32_t now = millis();
+            id(g_mode) = mode;
+            id(g_tok) = token;
+            id(g_label) = label;
+            id(g_title) = title;
+            id(g_body) = body;
+            id(g_opts) = opts;
+            id(g_full) = full;
+            id(g_since) = now;
+            id(g_guard_until) = now + 700;
+            id(g_a_armed) = false;
+            id(g_a_sent) = false;
+            id(g_sel) = 0;
+            id(g_knob_ref) = id(knob_frac).state;
+            id(g_last_input) = now;
+            if (mode == 2 || mode == 4 || mode == 5) id(buzz_alert).execute();
+            if (mode == 3) id(buzz).execute(60);
+        - script.execute: wake
+
+text_sensor:
+  - platform: template
+    id: verdict
+    name: pet_verdict
+  - platform: wifi_info
+    ip_address:
+      id: wifi_ip
+      name: ip_address
+
+# ---------------------------------------------------------------- buses
+
+i2c:
+  id: bus_a
+  sda: 18
+  scl: 19
+  frequency: 100kHz
+  scan: true
+
+spi:
+  - id: lcd_spi
+    clk_pin: 1
+    mosi_pin: 2
+
+pcf8574:
+  - id: pcf
+    address: 0x3F
+
+# ---------------------------------------------------------------- state
+
+globals:
+  - id: g_mode
+    type: int
+    initial_value: '0'
+  - id: g_tok
+    type: std::string
+    initial_value: '""'
+  - id: g_label
+    type: std::string
+    initial_value: '""'
+  - id: g_title
+    type: std::string
+    initial_value: '""'
+  - id: g_body
+    type: std::string
+    initial_value: '""'
+  - id: g_opts
+    type: std::string
+    initial_value: '""'
+  - id: g_full
+    type: bool
+    initial_value: 'false'
+  - id: g_since
+    type: uint32_t
+    initial_value: '0'
+  - id: g_guard_until
+    type: uint32_t
+    initial_value: '0'
+  - id: g_a_armed
+    type: bool
+    initial_value: 'false'
+  - id: g_a_since
+    type: uint32_t
+    initial_value: '0'
+  - id: g_a_sent
+    type: bool
+    initial_value: 'false'
+  - id: g_sel
+    type: int
+    initial_value: '0'
+  - id: g_knob_ref
+    type: float
+    initial_value: '0'
+  - id: g_last_input
+    type: uint32_t
+    initial_value: '0'
+  # 0 full, 1 dimmed, 2 off
+  - id: g_dim
+    type: int
+    initial_value: '0'
+  - id: g_was_conn
+    type: bool
+    initial_value: 'false'
+  # Up press time, so a held Up (talk) can be told apart from a tap
+  - id: g_up_since
+    type: uint32_t
+    initial_value: '0'
+  - id: g_up_sent
+    type: bool
+    initial_value: 'false'
+
+# ---------------------------------------------------------------- scripts
+
+script:
+  - id: buzz
+    mode: restart
+    parameters:
+      ms: int
+    then:
+      - switch.turn_on: motor
+      - delay: !lambda 'return ms;'
+      - switch.turn_off: motor
+
+  - id: buzz_alert
+    mode: single
+    then:
+      - switch.turn_on: motor
+      - delay: 150ms
+      - switch.turn_off: motor
+      - delay: 120ms
+      - switch.turn_on: motor
+      - delay: 150ms
+      - switch.turn_off: motor
+
+  - id: wake
+    mode: restart
+    then:
+      - lambda: |-
+          id(g_last_input) = millis();
+          if (id(g_dim) != 0) {
+            id(g_dim) = 0;
+            auto call = id(backlight).turn_on();
+            call.set_brightness(1.0f);
+            call.perform();
+          }
+
+  - id: send_verdict
+    mode: queued
+    parameters:
+      v: string
+    then:
+      - lambda: |-
+          if (id(g_tok).empty()) return;
+          id(verdict).publish_state(id(g_tok) + ":" + v);
+
+  # b: 1 up, 2 down, 3 left, 4 right, 5 A, 6 B
+  # Releasing a held Up stops dictation and sends it; a short tap leaves
+  # recording on until the next tap (Claude Code tap mode).
+  - id: on_up_release
+    mode: queued
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          const bool held = id(g_up_sent) && now - id(g_up_since) > 400;
+          id(g_up_sent) = false;
+          if (!held || id(g_mode) > 3 || !api::global_api_server->is_connected()) return;
+          id(send_verdict).execute(std::string("voice_up"));
+
+  - id: on_button
+    mode: queued
+    parameters:
+      b: int
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          // A press that only wakes the screen never acts, so a blind
+          // press on a dark screen cannot approve anything.
+          if (id(g_dim) != 0) { id(wake).execute(); return; }
+          id(g_last_input) = now;
+          if (!api::global_api_server->is_connected()) return;
+
+          const int m = id(g_mode);
+          int n = 0;
+          if (!id(g_opts).empty()) {
+            n = 1;
+            for (char c : id(g_opts)) if (c == '|') n++;
+          }
+
+          if (m <= 3) {
+            if (b == 1) {
+              id(g_up_since) = now;
+              id(g_up_sent) = true;
+              id(send_verdict).execute(std::string("voice"));
+            }
+            if (b == 2) id(send_verdict).execute(std::string("menu"));
+            if (b == 5) id(send_verdict).execute(std::string("replies"));
+            return;
+          }
+          if (m == 4) {
+            if (b == 6) { id(send_verdict).execute(std::string("deny")); id(g_a_sent) = true; return; }
+            if (b == 5 && now >= id(g_guard_until) && id(g_full) && !id(g_a_sent)) {
+              id(g_a_armed) = true;
+              id(g_a_since) = now;
+            }
+            return;
+          }
+          // choice (5) and sessions menu (6)
+          if (b == 1 && n > 0) id(g_sel) = (id(g_sel) + n - 1) % n;
+          if (b == 2 && n > 0) id(g_sel) = (id(g_sel) + 1) % n;
+          if (b == 6) id(send_verdict).execute(std::string(m == 5 ? "cancel" : "back"));
+          if (b == 5 && n > 0 && now >= id(g_guard_until)) {
+            char buf[12];
+            snprintf(buf, sizeof(buf), "%s%d", m == 5 ? "opt" : "menu", id(g_sel));
+            id(send_verdict).execute(std::string(buf));
+          }
+
+# ---------------------------------------------------------------- loops
+
+interval:
+  - interval: 50ms
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          // allow fires once, only for a fresh A press held a full second
+          if (id(g_mode) == 4 && id(g_a_armed) && !id(g_a_sent)) {
+            if (!id(btn_a).state) {
+              id(g_a_armed) = false;
+            } else if (now - id(g_a_since) >= 1000) {
+              id(g_a_sent) = true;
+              id(g_a_armed) = false;
+              id(send_verdict).execute(std::string("allow"));
+              id(buzz).execute(40);
+            }
+          }
+          // knob scrolls lists once it moves away from where it was at show time
+          if (id(g_mode) == 5 || id(g_mode) == 6) {
+            int n = id(g_opts).empty() ? 0 : 1;
+            for (char c : id(g_opts)) if (c == '|') n++;
+            float f = id(knob_frac).state;
+            if (n > 0 && fabsf(f - id(g_knob_ref)) > 0.08f) {
+              id(g_sel) = std::min(n - 1, (int) (f * n));
+              id(g_knob_ref) = -1.0f;
+              id(g_last_input) = now;
+            }
+          }
+
+  - interval: 1s
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          const bool conn = api::global_api_server->is_connected();
+          if (id(g_was_conn) && !conn) {
+            // a pending prompt never survives a lost hub; the hub re-pushes on reconnect
+            id(g_mode) = 0;
+            id(g_tok) = "";
+            id(g_opts) = "";
+          }
+          id(g_was_conn) = conn;
+          const int m = id(g_mode);
+          const bool needs_eyes = conn && (m == 2 || m == 4 || m == 5 || m == 6);
+          const uint32_t idle = now - id(g_last_input);
+          int want = 0;
+          if (!needs_eyes) {
+            if (idle > 300000) want = 2;
+            else if (idle > 60000) want = 1;
+          }
+          if (want != id(g_dim)) {
+            id(g_dim) = want;
+            auto call = want == 2 ? id(backlight).turn_off() : id(backlight).turn_on();
+            if (want != 2) call.set_brightness(want == 1 ? 0.25f : 1.0f);
+            call.perform();
+          }
+
+# ---------------------------------------------------------------- inputs
+
+binary_sensor:
+  - platform: gpio
+    id: btn_up
+    internal: true
+    pin: {pcf8574: pcf, number: 4, mode: {input: true}, inverted: true}
+    on_press:
+      - script.execute: {id: on_button, b: 1}
+    on_release:
+      - script.execute: on_up_release
+  - platform: gpio
+    id: btn_down
+    internal: true
+    pin: {pcf8574: pcf, number: 6, mode: {input: true}, inverted: true}
+    on_press:
+      - script.execute: {id: on_button, b: 2}
+  - platform: gpio
+    id: btn_left
+    internal: true
+    pin: {pcf8574: pcf, number: 5, mode: {input: true}, inverted: true}
+    on_press:
+      - script.execute: {id: on_button, b: 3}
+  - platform: gpio
+    id: btn_right
+    internal: true
+    pin: {pcf8574: pcf, number: 7, mode: {input: true}, inverted: true}
+    on_press:
+      - script.execute: {id: on_button, b: 4}
+  - platform: gpio
+    id: btn_a
+    internal: true
+    pin: {pcf8574: pcf, number: 2, mode: {input: true}, inverted: true}
+    on_press:
+      - script.execute: {id: on_button, b: 5}
+  - platform: gpio
+    id: btn_b
+    internal: true
+    pin: {pcf8574: pcf, number: 1, mode: {input: true}, inverted: true}
+    on_press:
+      - script.execute: {id: on_button, b: 6}
+
+sensor:
+  - platform: adc
+    id: pot_raw
+    pin: 4
+    attenuation: 12db
+    update_interval: 100ms
+    internal: true
+  - platform: template
+    id: knob_frac
+    internal: true
+    update_interval: 100ms
+    lambda: |-
+      float v = id(pot_raw).state;
+      if (std::isnan(v)) return 0.0f;
+      return std::min(1.0f, std::max(0.0f, v / 3.1f));
+  - platform: adc
+    id: battery
+    name: battery_voltage
+    pin: 0
+    attenuation: 12db
+    update_interval: 30s
+    unit_of_measurement: V
+    accuracy_decimals: 2
+    filters:
+      - multiply: 3.0
+  - platform: debug
+    free:
+      name: heap_free
+    block:
+      name: heap_max_block
+
+# ---------------------------------------------------------------- outputs
+
+switch:
+  - platform: gpio
+    id: motor
+    name: vibration_motor
+    pin: {pcf8574: pcf, number: 0, mode: {output: true}}
+    restore_mode: ALWAYS_OFF
+
+output:
+  - platform: ledc
+    id: backlight_output
+    pin: 23
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: backlight
+    output: backlight_output
+    restore_mode: ALWAYS_ON
+  - platform: esp32_rmt_led_strip
+    id: neopixels
+    name: neopixels
+    pin: 3
+    num_leds: 9
+    rgb_order: GRB
+    chipset: WS2812
+    default_transition_length: 0s
+    effects:
+      - addressable_lambda:
+          name: Clawd
+          update_interval: 40ms
+          lambda: |-
+            const uint32_t now = millis();
+            const float t = now / 1000.0f;
+            const bool conn = api::global_api_server->is_connected();
+            const int m = id(g_mode);
+            if (!conn) {
+              uint8_t v = (uint8_t) (6 + 5 * sinf(t * 1.2f));
+              it.all() = Color(0, 0, v);
+              return;
+            }
+            if (m == 1) {
+              // busy: an orange dot chasing around the ring
+              for (int i = 0; i < it.size(); i++) {
+                int d = (i - (int) (now / 90) % it.size() + it.size()) % it.size();
+                uint8_t v = d == 0 ? 255 : d == 1 ? 90 : d == 2 ? 25 : 0;
+                it[i] = Color(v * 0xDD / 255, v * 0x77 / 255, v * 0x5B / 255);
+              }
+              return;
+            }
+            if (m == 2 || m == 4 || m == 5) {
+              it.all() = ((now / 400) % 2) ? Color(255, 110, 0) : Color(40, 14, 0);
+              return;
+            }
+            if (m == 3 && now - id(g_since) < 4000) {
+              for (int i = 0; i < it.size(); i++) {
+                int h = (now / 4 + i * 85) % 768;
+                Color c = h < 256 ? Color(255 - h, h, 0) : h < 512 ? Color(0, 511 - h, h - 256) : Color(h - 512, 0, 767 - h);
+                it[i] = c;
+              }
+              return;
+            }
+            float k = 0.25f + 0.2f * sinf(t * 1.6f);
+            it.all() = Color((uint8_t) (0xDD * k), (uint8_t) (0x77 * k), (uint8_t) (0x5B * k));
+
+# ---------------------------------------------------------------- display
+
+font:
+  - file:
+      type: gfonts
+      family: Press Start 2P
+    id: f8
+    size: 8
+
+display:
+  - platform: mipi_spi
+    id: lcd
+    spi_id: lcd_spi
+    model: ILI9488
+    cs_pin: 14
+    dc_pin: 15
+    reset_pin: 22
+    data_rate: 40MHz
+    color_order: BGR
+    invert_colors: false
+    dimensions:
+      width: 320
+      height: 172
+      offset_width: 0
+      offset_height: 34
+    transform:
+      swap_xy: true
+      mirror_x: false
+      mirror_y: false
+    update_interval: 100ms
+    lambda: |-
+      const uint32_t now = millis();
+      const float t = now / 1000.0f;
+      const bool conn = api::global_api_server->is_connected();
+      const Color BG(24, 22, 20);
+      const Color ORANGE(0xDD, 0x77, 0x5B);
+      const Color INK(0, 0, 0);
+      const Color CREAM(240, 232, 216);
+      const Color DIM(150, 140, 128);
+      const Color LINE(70, 62, 56);
+      const int GROUND = 150;
+
+      auto clamp01 = [](float x) { return x < 0 ? 0.0f : (x > 1 ? 1.0f : x); };
+      auto ease_out2 = [&](float x) { x = clamp01(x); return 1 - (1 - x) * (1 - x); };
+      auto ease_in3 = [&](float x) { x = clamp01(x); return x * x * x; };
+      auto ease_inout = [&](float x) { x = clamp01(x); return x < 0.5f ? 2 * x * x : 1 - (2 - 2 * x) * (2 - 2 * x) / 2; };
+      auto sine_out = [&](float x) { x = clamp01(x); return sinf(x * 1.5707963f); };
+
+      // Pose offsets are in screen pixels on top of the mascot's rest pose.
+      struct Pose {
+        float bx = 0, by = 0, ex = 0, ey = 0, hl = 0, hr = 0, shear = 0;
+        float lift[4] = {0, 0, 0, 0};
+        float swing[4] = {0, 0, 0, 0};
+        bool closed = false;
+      };
+
+      auto quad = [&](float xt, float yt, float xb, float yb, float w, Color c) {
+        int ixt = (int) roundf(xt), ixb = (int) roundf(xb);
+        int iyt = (int) roundf(yt), iyb = (int) roundf(yb), iw = std::max(1, (int) roundf(w));
+        if (iyb <= iyt) return;
+        if (ixt == ixb) { it.filled_rectangle(ixt, iyt, iw, iyb - iyt, c); return; }
+        it.filled_triangle(ixt, iyt, ixt + iw, iyt, ixb + iw, iyb, c);
+        it.filled_triangle(ixt, iyt, ixb, iyb, ixb + iw, iyb, c);
+      };
+
+      // The Claude mascot, rebuilt from its reference rects (viewBox 107x86):
+      // body 85x65, hands 22x23, eyes 11x11, four legs 11x26 standing on y=86.
+      auto claude = [&](float cx, float g, float s, const Pose &p) {
+        auto X = [&](float u) { return cx + (u - 53.5f) * s; };
+        auto Y = [&](float v) { return g + (v - 86.0f) * s; };
+        auto R = [&](float u, float v, float w, float h, float dx, float dy, Color c) {
+          it.filled_rectangle((int) roundf(X(u) + dx), (int) roundf(Y(v) + dy),
+                              std::max(1, (int) roundf(w * s)), std::max(1, (int) roundf(h * s)), c);
+        };
+        const float legs[4] = {11, 32, 64, 85};
+        for (int i = 0; i < 4; i++) {
+          quad(X(legs[i]) + p.bx + p.shear, Y(60) + p.by, X(legs[i]) + p.swing[i], g - p.lift[i], 11 * s, ORANGE);
+        }
+        R(11, 0, 85, 65, p.bx, p.by, ORANGE);
+        R(0, 21, 22, 23, p.bx, p.by + p.hl, ORANGE);
+        R(85, 21, 22, 23, p.bx, p.by + p.hr, ORANGE);
+        if (p.closed) {
+          R(21, 18, 11, 3, p.bx + p.ex, p.by + p.ey, INK);
+          R(75, 18, 11, 3, p.bx + p.ex, p.by + p.ey, INK);
+        } else {
+          R(21, 11, 11, 11, p.bx + p.ex, p.by + p.ey, INK);
+          R(75, 11, 11, 11, p.bx + p.ex, p.by + p.ey, INK);
+        }
+      };
+
+      // right-hand anchor, for props held in the hand
+      auto hand_r = [&](float cx, float g, float s, const Pose &p, float &hx, float &hy) {
+        hx = cx + (107 - 53.5f) * s + p.bx;
+        hy = g + (21 - 86.0f) * s + p.by + p.hr;
+      };
+
+      auto flag = [&](float hx, float hy, float s) {
+        const int cell = std::max(2, (int) roundf(5 * s / 0.85f));
+        const int pole = cell * 6;
+        it.filled_rectangle((int) hx - 2, (int) hy - pole, 2, pole + 2, Color(120, 90, 60));
+        for (int c = 0; c < 5; c++) {
+          float wave = sinf(t * 9.0f - c * 0.9f) * 2.5f * (c / 4.0f);
+          for (int r = 0; r < 4; r++) {
+            Color fc = (r + c) % 2 ? CREAM : Color(225, 215, 198);
+            it.filled_rectangle((int) hx + c * cell, (int) (hy - pole + r * cell + wave), cell, cell, fc);
+          }
+        }
+      };
+
+      auto split = [&](const std::string &s) {
+        std::vector<std::string> out;
+        if (s.empty()) return out;
+        size_t a = 0;
+        while (true) {
+          size_t b = s.find('|', a);
+          out.push_back(s.substr(a, b == std::string::npos ? std::string::npos : b - a));
+          if (b == std::string::npos) break;
+          a = b + 1;
+        }
+        return out;
+      };
+
+      auto wrap = [&](const std::string &s, size_t width, size_t max_lines) {
+        std::vector<std::string> lines;
+        std::string cur;
+        size_t i = 0;
+        while (i < s.size() && lines.size() < max_lines) {
+          size_t j = s.find(' ', i);
+          std::string word = s.substr(i, j == std::string::npos ? std::string::npos : j - i);
+          i = j == std::string::npos ? s.size() : j + 1;
+          while (word.size() > width) {
+            if (!cur.empty()) { lines.push_back(cur); cur.clear(); }
+            lines.push_back(word.substr(0, width));
+            word = word.substr(width);
+          }
+          if (cur.size() + (cur.empty() ? 0 : 1) + word.size() > width) { lines.push_back(cur); cur.clear(); }
+          cur += (cur.empty() ? "" : " ") + word;
+        }
+        if (!cur.empty() && lines.size() < max_lines) lines.push_back(cur);
+        if (lines.size() > max_lines) lines.resize(max_lines);
+        return lines;
+      };
+
+      const int m = id(g_mode);
+      const uint32_t since = now - id(g_since);
+      const bool blink = fmodf(t, 3.7f) < 0.12f;
+      it.fill(BG);
+
+      // ------------------------------------------------ list screens
+      if (conn && (m == 5 || m == 6)) {
+        auto head = wrap(id(g_title), 38, 2);
+        for (size_t l = 0; l < head.size(); l++)
+          it.print(4, 4 + l * 11, id(f8), ORANGE, TextAlign::TOP_LEFT, head[l].c_str());
+        auto opts = split(id(g_opts));
+        for (int i = 0; i < (int) opts.size() && i < 4; i++) {
+          const int y = 30 + i * 28;
+          const bool on = i == id(g_sel);
+          if (on) it.filled_rectangle(4, y, 312, 24, ORANGE);
+          else it.rectangle(4, y, 312, 24, LINE);
+          std::string o = opts[i].substr(0, 37);
+          it.print(12, y + 12, id(f8), on ? INK : CREAM, TextAlign::CENTER_LEFT, o.c_str());
+        }
+        it.print(160, 164, id(f8), DIM, TextAlign::CENTER, "A SELECT   B BACK");
+        return;
+      }
+
+      // ------------------------------------------------ permission prompt
+      if (conn && m == 4) {
+        Pose p;
+        p.hr = -18;
+        p.by = sinf(t * 3.0f) * 1.0f;
+        p.closed = blink;
+        claude(40, 120, 0.45f, p);
+        float hx, hy;
+        hand_r(40, 120, 0.45f, p, hx, hy);
+        flag(hx, hy, 0.45f);
+        it.print(84, 4, id(f8), ORANGE, TextAlign::TOP_LEFT, id(g_title).substr(0, 29).c_str());
+        auto lines = wrap(id(g_body), 29, 11);
+        for (size_t l = 0; l < lines.size(); l++)
+          it.print(84, 18 + l * 10, id(f8), CREAM, TextAlign::TOP_LEFT, lines[l].c_str());
+        it.filled_rectangle(0, 136, 320, 1, LINE);
+        if (id(g_a_sent)) {
+          it.print(160, 154, id(f8), DIM, TextAlign::CENTER, "SENT");
+        } else if (!id(g_full)) {
+          it.print(160, 146, id(f8), Color(255, 180, 90), TextAlign::CENTER, "TOO LONG TO SHOW");
+          it.print(160, 162, id(f8), DIM, TextAlign::CENTER, "APPROVE AT KEYBOARD  B DENY");
+        } else {
+          float k = 0;
+          if (id(g_a_armed)) k = std::min(1.0f, (now - id(g_a_since)) / 1000.0f);
+          it.rectangle(8, 142, 150, 24, LINE);
+          if (k > 0) it.filled_rectangle(10, 144, (int) (146 * k), 20, ORANGE);
+          const bool guard = now < id(g_guard_until);
+          it.print(83, 154, id(f8), guard ? LINE : (k > 0 ? INK : CREAM), TextAlign::CENTER, "HOLD A ALLOW");
+          it.rectangle(166, 142, 146, 24, LINE);
+          it.print(239, 154, id(f8), CREAM, TextAlign::CENTER, "B DENY");
+        }
+        return;
+      }
+
+      // ------------------------------------------------ pet screens
+      it.filled_rectangle(0, GROUND, 320, 1, LINE);
+      const char *status = "READY";
+      Color scol = DIM;
+      Pose p;
+      float cx = 160, gy = 0;
+      bool show_flag = false, confetti = false;
+      const bool done_anim = m == 3 && since < 4000;
+
+      if (!conn) {
+        const bool wifi_ok = wifi::global_wifi_component->is_connected();
+        status = wifi_ok ? "NO MAC LINKED" : "NO WIFI";
+        scol = wifi_ok ? DIM : Color(255, 120, 90);
+        if (wifi_ok) it.printf(160, 162, id(f8), LINE, TextAlign::CENTER, "IP %s", id(wifi_ip).state.c_str());
+        p.by = 9 + sinf(t * 1.3f) * 1.2f;
+        p.closed = true;
+        for (int k = 0; k < 3; k++) {
+          float z = fmodf(t * 0.5f + k * 0.33f, 1.0f);
+          it.print(200 + (int) (z * 24), 90 - (int) (z * 40), id(f8), Color(140, 150, 220), TextAlign::CENTER, "z");
+        }
+      } else if (m == 1) {
+        status = id(g_title).empty() ? "WORKING" : id(g_title).c_str();
+        scol = ORANGE;
+        const int ph = (now / 125) % 2;
+        p.hl = ph ? -6 : 0;
+        p.hr = ph ? 0 : -6;
+        p.by = sinf(t * 6.0f) * 1.5f;
+        p.ey = 2;
+        p.closed = blink;
+        for (int k = 0; k < 3; k++)
+          if ((now / 250) % 4 > (uint32_t) k) it.filled_rectangle(148 + k * 10, 60, 5, 5, CREAM);
+      } else if (m == 2) {
+        status = "NEEDS YOU";
+        scol = Color(255, 160, 60);
+        static const float sway[12] = {0, 0, -5, -5, 0, 4, 4, 4, 0, 0, -5, -5};
+        static const float lhy[12] = {0, 0, 4, 4, 0, 0, 0, 0, 0, 0, 4, 4};
+        const int f = (now / 90) % 12;
+        p.bx = sway[f] * 0.85f;
+        p.hl = lhy[f] * 0.85f;
+        p.hr = -24;
+        p.closed = blink;
+        show_flag = true;
+      } else if (done_anim) {
+        status = "DONE!";
+        scol = Color(120, 220, 140);
+        const int f = (now / 125) % 8;
+        p.bx = f < 4 ? -3 : 3;
+        p.hr = (f == 1 || f == 2) ? -20 : 0;
+        p.hl = (f == 5 || f == 6) ? -20 : 0;
+        if (f == 1 || f == 2) { p.lift[0] = 6; p.lift[1] = 6; p.by = -2; }
+        if (f == 5 || f == 6) { p.lift[2] = 6; p.lift[3] = 6; p.by = -2; }
+        confetti = true;
+      } else {
+        // idle: look around, hop away, walk home (10 s loop, timings after the reference animation)
+        const uint32_t cyc = (now / 10000);
+        const float q = (float) (now % 10000);
+        const float dir = (cyc % 2) ? 1.0f : -1.0f;
+        float lean = 0;
+        if (q >= 1500 && q < 1900) lean = -ease_out2((q - 1500) / 400);
+        else if (q >= 1900 && q < 2800) lean = -1;
+        else if (q >= 2800 && q < 3200) lean = -1 + ease_out2((q - 2800) / 400);
+        else if (q >= 3400 && q < 3800) lean = ease_out2((q - 3400) / 400);
+        else if (q >= 3800 && q < 4700) lean = 1;
+        else if (q >= 4700 && q < 5100) lean = 1 - ease_out2((q - 4700) / 400);
+        p.ex = 3 * lean;
+        p.bx = 3 * lean;
+        p.by = -5 * fabsf(lean);
+        p.shear = 3 * lean;
+        const float jx = dir * 80;
+        if (q >= 5300 && q < 5400) {
+          float k = ease_in3((q - 5300) / 100);
+          p.by += 7 * k; p.hl += 8 * k; p.hr += 8 * k;
+        } else if (q >= 5400 && q < 6250) {
+          float j = q - 5400;
+          cx = 160 + jx * ease_inout(j / 850);
+          if (j < 420) gy = -60 * sine_out(j / 420);
+          else if (j < 600) gy = -60;
+          else gy = -60 + 60 * ease_in3((j - 600) / 250);
+        } else if (q >= 6250 && q < 6300) {
+          cx = 160 + jx; p.hl += 4; p.hr += 4;
+        } else if (q >= 6300 && q < 6600) {
+          cx = 160 + jx;
+        } else if (q >= 6600 && q < 9600) {
+          float w = (q - 6600) / 3000;
+          cx = 160 + jx * (1 - w);
+          const int ph = ((uint32_t) q / 150) % 2;
+          for (int i = 0; i < 4; i++) {
+            const bool up = (i % 2) == ph;
+            p.lift[i] = up ? 4 : 0;
+            p.swing[i] = up ? -dir * 3 : 0;
+          }
+          p.by += ph ? -1 : 0;
+        }
+        p.closed = blink;
+        if (!id(g_label).empty()) status = "READY";
+      }
+
+      claude(cx, GROUND + gy, 0.85f, p);
+      if (show_flag) {
+        float hx, hy;
+        hand_r(cx, GROUND + gy, 0.85f, p, hx, hy);
+        flag(hx, hy, 0.85f);
+      }
+      if (confetti) {
+        static const Color pal[5] = {Color(255, 90, 90), Color(255, 210, 60), Color(90, 200, 255), Color(120, 230, 120), Color(230, 120, 255)};
+        for (int burst = 0; burst < 2; burst++) {
+          const float ph = ((now + (burst == 0 ? 875 : 250)) % 1000) / 1000.0f;
+          const float side = burst == 0 ? 1.0f : -1.0f;
+          const float ox = 160 + side * 50, oy = GROUND - 70;
+          for (int k = 0; k < 14; k++) {
+            if (ph > 0.9f) break;
+            float vx = side * ((k % 7) * 12.0f + 10.0f) * (k % 2 ? 1.0f : 0.6f);
+            float vy = -(90.0f + (k * 37) % 60);
+            int x = (int) (ox + vx * ph);
+            int y = (int) (oy + vy * ph + 170.0f * ph * ph);
+            it.filled_rectangle(x, y, 3, 3, pal[k % 5]);
+          }
+        }
+      }
+
+      it.print(4, 4, id(f8), DIM, TextAlign::TOP_LEFT, id(g_label).substr(0, 20).c_str());
+      it.print(316, 4, id(f8), scol, TextAlign::TOP_RIGHT, std::string(status).substr(0, 18).c_str());
+      // on pet screens the hub puts the footer hint in body (e.g. when replies are waiting)
+      if (conn) it.print(160, 162, id(f8), id(g_body).empty() ? LINE : ORANGE, TextAlign::CENTER,
+                         id(g_body).empty() ? "v SESSIONS  ^ HOLD TO TALK" : id(g_body).substr(0, 39).c_str());

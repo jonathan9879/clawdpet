@@ -1,0 +1,15 @@
+#!/bin/sh
+# Start (or attach to) Claude Code sessions wired to the clawdpet device.
+# Sessions live in the tmux session "clawdpet" so the device can switch
+# between them, open new ones and trigger voice input.
+set -e
+CMD="claude --dangerously-load-development-channels plugin:clawdpet@clawdpet-local"
+
+if [ -n "$TMUX" ]; then
+  exec $CMD "$@"
+fi
+if tmux has-session -t clawdpet 2>/dev/null; then
+  tmux new-window -t clawdpet: -c "$PWD" "$CMD $*"
+  exec tmux attach -t clawdpet
+fi
+exec tmux new-session -s clawdpet -c "$PWD" "$CMD $*"

@@ -1,0 +1,6 @@
+{
+  "name": "clawdpet-local",
+  "owner": { "name": "clawdpet" },
+  "description": "Local marketplace for the clawdpet plugin",
+  "plugins": [{ "name": "clawdpet", "source": "./plugin" }]
+}
