@@ -1,6 +1,6 @@
-// Channel MCP server, one per Claude Code session. Registers the session
-// with the hub, relays permission prompts to the device and verdicts back,
-// and offers suggested replies. stdout belongs to MCP; logs go to stderr.
+// MCP server, one per Claude Code session. Registers the session with the
+// hub for as long as the session runs and offers suggested replies.
+// stdout belongs to MCP; logs go to stderr.
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -14,15 +14,9 @@ const key = sessionKey();
 const mcp = new Server(
   { name: 'clawdpet', version: '0.2.0' },
   {
-    capabilities: {
-      experimental: {
-        'claude/channel': {},
-        'claude/channel/permission': {},
-      },
-      tools: {},
-    },
+    capabilities: { tools: {} },
     instructions:
-      'The clawdpet channel connects this session to a handheld Claude pet with buttons. ' +
+      'The clawdpet server connects this session to a handheld Claude pet with buttons. ' +
       'It relays tool approval prompts to the device and shows AskUserQuestion questions there. ' +
       'When you need a decision from the user, prefer AskUserQuestion with 2 to 4 short options ' +
       '(under 35 characters each) over asking in prose. ' +
@@ -64,34 +58,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   return { content: [{ type: 'text', text: 'shown on the device' }] };
 });
 
-const PermissionRequest = z.object({
-  method: z.literal('notifications/claude/channel/permission_request'),
-  params: z.object({
-    request_id: z.string(),
-    tool_name: z.string(),
-    description: z.string(),
-    input_preview: z.string(),
-  }),
-});
-
 // Outside tmux the session is not tracked, so it never connects to the hub.
 const hub = key
   ? connectPersistent({
     log,
     onOpen: () => hub.send({ type: 'register', key, pane: key, cwd: process.cwd() }),
-    onMessage: async (msg) => {
-      if (msg.type !== 'verdict') return;
-      if (!/^[a-km-z]{5}$/.test(msg.request_id) || !['allow', 'deny'].includes(msg.behavior)) return;
-      await mcp.notification({
-        method: 'notifications/claude/channel/permission',
-        params: { request_id: msg.request_id, behavior: msg.behavior },
-      });
-    },
+    onMessage: () => {},
   })
   : { send() {} };
-
-mcp.setNotificationHandler(PermissionRequest, async ({ params }) => {
-  hub.send({ type: 'perm', key, ...params });
-});
 
 await mcp.connect(new StdioServerTransport());

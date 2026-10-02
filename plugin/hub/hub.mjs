@@ -1,13 +1,13 @@
 // clawdpet hub: one per Mac. Owns the encrypted link to the device, keeps the
 // session registry, and turns device verdicts into Claude Code actions.
-// Started detached by the first channel server; a lock keeps it single.
+// Started detached by the first session server; a lock keeps it single.
 import fs from 'node:fs';
 import net from 'node:net';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { HOME_DIR, SOCKET, LOCK, CLAUDE_ARGS, TMUX_SESSION } from './paths.mjs';
-import { newState, applyEvent, computeScreen, sameScreen, parseVerdict, decide } from './logic.mjs';
+import { newState, applyEvent, computeScreen, sameScreen, parseVerdict, decide, promptFits } from './logic.mjs';
 
 const require = createRequire(import.meta.url);
 const { Connection } = require('@2colors/esphome-native-api');
@@ -49,7 +49,7 @@ const releaseLock = () => {
 process.on('exit', releaseLock);
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
 
-// Device settings arrive from the plugin's userConfig through the channel
+// Device settings arrive from the plugin's userConfig through the session
 // server's environment, which this process inherits.
 const config = { host: process.env.CLAWDPET_DEVICE_HOST || 'protobadge.local', port: 6053 };
 const encryptionKey = (process.env.CLAWDPET_DEVICE_KEY || '').trim();
@@ -59,8 +59,8 @@ if (!encryptionKey) {
 }
 
 const state = newState();
-const channels = new Map(); // session key -> socket of its channel server
-const askSockets = new Map(); // ask id -> socket of the blocked AskUserQuestion hook
+// request or ask id -> socket of the blocked hook waiting for the device
+const waiting = new Map();
 const hubId = crypto.randomBytes(4).toString('hex');
 let seq = 0;
 let shown = null; // { token, ref, ...screen } currently on the device
@@ -149,12 +149,12 @@ function tmux(args) {
 function runEffect(fx) {
   switch (fx.type) {
     case 'verdict': {
-      const sock = channels.get(fx.key);
-      if (sock) send(sock, { type: 'verdict', request_id: fx.request_id, behavior: fx.behavior });
+      const sock = waiting.get(fx.request_id);
+      if (sock) send(sock, { type: 'perm_reply', request_id: fx.request_id, behavior: fx.behavior });
       return;
     }
     case 'ask_reply': {
-      const sock = askSockets.get(fx.ask_id);
+      const sock = waiting.get(fx.ask_id);
       if (sock) send(sock, { type: 'ask_reply', ask_id: fx.ask_id, answers: fx.answers });
       return;
     }
@@ -197,18 +197,19 @@ function send(sock, obj) {
 
 function onClientMessage(sock, msg) {
   if (!msg || typeof msg.type !== 'string' || typeof msg.key !== 'string') return;
-  if (msg.type === 'register') {
-    sock.sessionKey = msg.key;
-    channels.set(msg.key, sock);
-  }
-  if (msg.type === 'ask') {
-    // with no device to answer on, release the hook at once so the terminal dialog opens
-    if (!device?.ready || typeof msg.ask_id !== 'string') {
-      send(sock, { type: 'ask_reply', ask_id: msg.ask_id, answers: null });
+  if (msg.type === 'register') sock.sessionKey = msg.key;
+  if (msg.type === 'ask' || msg.type === 'perm') {
+    const id = msg.type === 'ask' ? msg.ask_id : msg.request_id;
+    // With no device to answer on, or a prompt too long to show in full,
+    // release the hook at once so the terminal dialog opens.
+    if (!device?.ready || typeof id !== 'string' || (msg.type === 'perm' && !promptFits(msg))) {
+      send(sock, msg.type === 'ask'
+        ? { type: 'ask_reply', ask_id: id, answers: null }
+        : { type: 'perm_reply', request_id: id, behavior: null });
       return;
     }
-    sock.ask = { key: msg.key, ask_id: msg.ask_id };
-    askSockets.set(msg.ask_id, sock);
+    sock.waiting = { key: msg.key, id, type: msg.type };
+    waiting.set(id, sock);
   }
   applyEvent(state, msg);
   render();
@@ -229,14 +230,17 @@ const server = net.createServer((sock) => {
     }
   });
   sock.on('close', () => {
-    if (sock.ask) {
-      askSockets.delete(sock.ask.ask_id);
-      applyEvent(state, { type: 'ask_closed', key: sock.ask.key, ask_id: sock.ask.ask_id });
+    const w = sock.waiting;
+    if (w) {
+      waiting.delete(w.id);
+      applyEvent(state, w.type === 'ask'
+        ? { type: 'ask_closed', key: w.key, ask_id: w.id }
+        : { type: 'perm_closed', key: w.key, request_id: w.id });
       render();
     }
-    if (sock.sessionKey && channels.get(sock.sessionKey) === sock) {
-      channels.delete(sock.sessionKey);
-      applyEvent(state, { type: 'channel_closed', key: sock.sessionKey });
+    // the session's MCP server lives as long as the session
+    if (sock.sessionKey) {
+      applyEvent(state, { type: 'session_end', key: sock.sessionKey });
       render();
     }
   });

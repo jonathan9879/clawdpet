@@ -9,7 +9,7 @@
     "clawdpet": {
       "command": "node",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/server/channel.mjs"
+        "${CLAUDE_PLUGIN_ROOT}/server/session.mjs"
       ],
       "env": {
         "CLAWDPET_DEVICE_HOST": "${user_config.device_host}",
@@ -17,12 +17,6 @@
       }
     }
   },
-  "channels": [
-    {
-      "server": "clawdpet",
-      "displayName": "Clawdpet"
-    }
-  ],
   "userConfig": {
     "device_host": {
       "type": "string",

@@ -45,7 +45,7 @@ Needs `~/.clawdpet/firmware.env`, `api_key`, `ota_password` and `secrets.yaml`. 
 ## Layout
 
 - `firmware/protobadge.yaml`: ESPHome config with `__PLACEHOLDER__` values; `firmware/flash.sh` fills them from `~/.clawdpet`.
-- `plugin/`: Claude Code plugin: channel server (`server/`), hooks (`hooks/`), hub (`hub/`).
+- `plugin/`: Claude Code plugin: session server (`server/`), hooks (`hooks/`), hub (`hub/`).
 - `plugin/scripts/clawd`: launcher that keeps sessions in the `clawdpet` tmux session (copied to `~/.local/bin` by `/clawdpet:setup`).
 - `plugin/skills/setup`: the `/clawdpet:setup` skill.
 - `docs/PLAN.md`: design, security model and the open spikes.
@@ -60,5 +60,5 @@ cd plugin && npm test
 
 - Only sessions started with `clawd` (inside tmux) appear on the pet; the desktop app has no control surface for this.
 - Suggested replies appear when Claude offers them at the end of a turn (footer shows `A REPLY(n)`); the picked one is typed into the session as your message.
-- A prompt that does not fully fit on the screen can only be denied from the device.
+- Approvals and questions on the device make the terminal wait (20 s and 45 s); B or the timeout hands them to the keyboard. Approvals too long to show in full go straight to the keyboard.
 - Claude's multiple-choice questions (AskUserQuestion) show on the device for 45 s; while one is shown the terminal waits, and B or the timeout hands it back to the keyboard. Multi-select questions take one pick from the device.

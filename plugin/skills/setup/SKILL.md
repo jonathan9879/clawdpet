@@ -8,11 +8,11 @@ disable-model-invocation: true
 
 Clawdpet is an ESP32-C6 handheld that shows the Claude mascot and acts as a remote for Claude Code sessions. This plugin provides:
 
-- a **channel MCP server** (one per session) that relays tool approval prompts to the device and offers the `suggest_replies` tool;
-- **hooks** that report session state, show AskUserQuestion questions on the device, and pre-approve `suggest_replies`;
-- a **hub** daemon, started by the first channel server, that holds the encrypted ESPHome native API connection to the device (port 6053) and uses tmux to switch sessions, open new ones, type picked replies and press the dictation key.
+- a **session MCP server** (one per session) that registers the session and offers the `suggest_replies` tool;
+- **hooks** that report session state, show tool approval prompts (PermissionRequest) and AskUserQuestion questions on the device, and pre-approve `suggest_replies`;
+- a **hub** daemon, started by the first session server, that holds the encrypted ESPHome native API connection to the device (port 6053) and uses tmux to switch sessions, open new ones, type picked replies and press the dictation key.
 
-Sessions must run inside tmux through the `clawd` launcher, which starts Claude Code with `--dangerously-load-development-channels plugin:clawdpet@clawdpet` (custom channels are a research preview, so Claude Code shows a one-time warning the user confirms). Sessions outside tmux are not tracked. The hub keeps its socket, lock and log in `~/.clawdpet/`.
+Sessions must run inside tmux, which the `clawd` launcher does (it starts plain `claude` in the `clawdpet` tmux session). Sessions outside tmux are not tracked. While an approval or question is on the device, the terminal waits (20 s for approvals, 45 s for questions); B on the device or the timeout hands it back to the keyboard, and approvals too long to show in full go straight to the keyboard. The hub keeps its socket, lock and log in `~/.clawdpet/`.
 
 Work through the steps in order. Tell the user what each step changes before changing user settings, and never ask for the device key in chat.
 
@@ -41,7 +41,7 @@ Explain, then ask before changing: this enables Claude Code voice dictation in t
 
 ## 6. Verify the connection
 
-1. Ask the user to open a terminal in any project folder, run `clawd`, and confirm the development channels warning.
+1. Ask the user to open a terminal in any project folder and run `clawd` (accept the folder trust question if Claude Code asks; its default answer is "No, exit").
 2. Then read `tail -5 ~/.clawdpet/hub.log`. Expect `hub ... listening` followed by `device connected`; on the device the pet wakes up and the top left shows `1/1 <folder>`.
    - `no device key configured`: step 2 was not completed; after configuring, restart the hub with `pkill -f clawdpet/plugin/hub/hub.mjs` (it restarts within 10 s while a `clawd` session is open) and restart `clawd`.
    - `getaddrinfo ENOTFOUND`: the hostname does not resolve; set `device_host` to the IP and restart as above.

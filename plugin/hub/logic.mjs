@@ -27,7 +27,7 @@ export function sanitize(input, max = MAX_FIELD) {
     .trim();
   let truncated = false;
   if (out.length > max) {
-    out = out.slice(0, max);
+    out = out.slice(0, max).trimEnd();
     truncated = true;
   }
   const changed = truncated || out !== raw.replace(/\s+/g, ' ').trim();
@@ -82,7 +82,7 @@ function find(state, key) {
 function ensure(state, key, fields = {}) {
   let s = find(state, key);
   if (!s) {
-    s = { key, pane: null, label: 'session', phase: 'idle', tool: '', pending: null, hasChannel: false };
+    s = { key, pane: null, label: 'session', phase: 'idle', tool: '', pending: null };
     state.sessions.push(s);
     if (!state.activeKey) state.activeKey = key;
   }
@@ -95,19 +95,19 @@ function remove(state, key) {
   if (state.activeKey === key) state.activeKey = state.sessions[0]?.key ?? null;
 }
 
-// Applies one event from a hook or channel. Returns nothing; mutates state.
+// Applies one event from a hook or the session's MCP server. Returns nothing; mutates state.
 // Phase events never touch a pending prompt: only a verdict, the matching
-// PostToolUse, Stop, or the session going away clears one.
+// PostToolUse, Stop, its hook going away, or the session ending clears one.
 export function applyEvent(state, ev, now = Date.now()) {
   const key = ev.key;
   if (!key) return;
   switch (ev.type) {
     case 'register':
-      ensure(state, key, { pane: ev.pane ?? null, cwd: ev.cwd, label: labelFrom(ev.cwd), hasChannel: true });
+      ensure(state, key, { pane: ev.pane ?? null, cwd: ev.cwd, label: labelFrom(ev.cwd) });
       return;
-    case 'channel_closed': {
+    case 'perm_closed': {
       const s = find(state, key);
-      if (s) { s.pending = null; s.hasChannel = false; }
+      if (s?.pending?.request_id === ev.request_id) s.pending = null;
       return;
     }
     case 'session_start':
@@ -181,6 +181,17 @@ export function labelFrom(cwd) {
   return parts[parts.length - 1] || '/';
 }
 
+function promptBody(p) {
+  return sanitize([p.description ?? p.desc, p.input_preview ?? p.preview].filter(Boolean).join(' : '));
+}
+
+// A prompt is offered on the device only when every character fits on screen
+// unchanged; anything else is answered at the keyboard.
+export function promptFits(p) {
+  const body = promptBody(p);
+  return !body.changed && fitsScreen(body.text);
+}
+
 // What the device should show now. `ref` says what a verdict on this screen
 // acts on; it never leaves the hub.
 export function computeScreen(state) {
@@ -203,9 +214,8 @@ export function computeScreen(state) {
     const p = withPending.pending;
     const where = withPending === active ? '' : ` @${withPending.label}`;
     const title = sanitize(`${p.tool}${where}`, 29).text;
-    const raw = [p.desc, p.preview].filter(Boolean).join(' : ');
-    const body = sanitize(raw);
-    const full = !body.changed && fitsScreen(body.text);
+    const body = promptBody(p);
+    const full = promptFits(p);
     return { mode: MODE.prompt, label: withPending.label, title, body: body.text, opts: '', full,
       ref: { kind: 'perm', key: withPending.key, request_id: p.request_id } };
   }

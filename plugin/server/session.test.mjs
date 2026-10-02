@@ -11,7 +11,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { z } from 'zod';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const CHANNEL = path.join(here, 'channel.mjs');
+const SESSION = path.join(here, 'session.mjs');
+const PERMISSION = path.join(here, '..', 'hooks', 'permission.mjs');
 const HOOK = path.join(here, '..', 'hooks', 'notify.mjs');
 
 function fakeHub(dir) {
@@ -47,48 +48,71 @@ const until = async (fn, ms = 3000) => {
   throw new Error('timed out');
 };
 
-test('the channel server registers, relays a permission prompt, and returns the device verdict', async () => {
+test('the session server registers its tmux pane and offers no channel capability', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawdpet-'));
   const hub = await fakeHub(dir);
   const client = new Client({ name: 'test', version: '0' });
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [CHANNEL],
+    args: [SESSION],
     env: { ...process.env, CLAWDPET_HOME: dir, TMUX_PANE: '%9' },
     stderr: 'ignore',
   });
-  const verdicts = [];
-  client.setNotificationHandler(
-    z.object({ method: z.literal('notifications/claude/channel/permission'), params: z.any() }),
-    (n) => { verdicts.push(n.params); },
-  );
   try {
     await client.connect(transport);
-    const caps = client.getServerCapabilities();
-    assert.deepEqual(caps.experimental, { 'claude/channel': {}, 'claude/channel/permission': {} });
-
+    assert.equal(client.getServerCapabilities().experimental, undefined);
     const reg = await until(() => hub.received.find((m) => m.type === 'register'));
     assert.equal(reg.key, '%9');
     assert.equal(reg.pane, '%9');
-
-    await client.notification({
-      method: 'notifications/claude/channel/permission_request',
-      params: { request_id: 'abcde', tool_name: 'Bash', description: 'List files', input_preview: '{"command":"ls"}' },
-    });
-    const p = await until(() => hub.received.find((m) => m.type === 'perm'));
-    assert.deepEqual(p, { type: 'perm', key: '%9', request_id: 'abcde', tool_name: 'Bash',
-      description: 'List files', input_preview: '{"command":"ls"}' });
-
-    hub.send({ type: 'verdict', request_id: 'zzzzl', behavior: 'allow' });
-    hub.send({ type: 'verdict', request_id: 'abcde', behavior: 'maybe' });
-    hub.send({ type: 'verdict', request_id: 'abcde', behavior: 'deny' });
-    await until(() => verdicts.length > 0);
-    await new Promise((r) => setTimeout(r, 100));
-    assert.deepEqual(verdicts, [{ request_id: 'abcde', behavior: 'deny' }]);
   } finally {
     await client.close();
     await hub.close();
   }
+});
+
+async function runPermissionHook(dir, input, reply) {
+  const { spawn } = await import('node:child_process');
+  const hub = await fakeHub(dir);
+  try {
+    const child = spawn(process.execPath, [PERMISSION], { env: { ...process.env, CLAWDPET_HOME: dir, TMUX_PANE: '%5' } });
+    let out = '';
+    child.stdout.on('data', (c) => { out += c; });
+    const exited = new Promise((r) => child.on('exit', r));
+    child.stdin.end(JSON.stringify(input));
+    const msg = await until(() => hub.received.find((m) => m.type === 'perm'));
+    hub.send({ type: 'perm_reply', request_id: msg.request_id, behavior: reply });
+    assert.equal(await exited, 0);
+    return { msg, out };
+  } finally {
+    await hub.close();
+  }
+}
+
+test('the permission hook returns the device verdict as the decision', async () => {
+  const input = { hook_event_name: 'PermissionRequest', session_id: 's1', tool_name: 'Bash',
+    tool_input: { command: 'ls', description: 'List files' } };
+  for (const behavior of ['allow', 'deny']) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawdpet-'));
+    const { msg, out } = await runPermissionHook(dir, input, behavior);
+    assert.equal(msg.key, '%5');
+    assert.equal(msg.tool_name, 'Bash');
+    assert.equal(msg.description, 'List files');
+    assert.equal(msg.input_preview, '{"command":"ls","description":"List files"}');
+    assert.deepEqual(JSON.parse(out),
+      { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior } } }, behavior);
+  }
+});
+
+test('the permission hook prints nothing when the device hands the prompt to the keyboard', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawdpet-'));
+  const input = { hook_event_name: 'PermissionRequest', session_id: 's1', tool_name: 'Bash', tool_input: { command: 'ls' } };
+  const { out } = await runPermissionHook(dir, input, null);
+  assert.equal(out, '');
+  const noHub = spawnSync(process.execPath, [PERMISSION], {
+    input: JSON.stringify(input), env: { ...process.env, CLAWDPET_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'clawdpet-')), TMUX_PANE: '%5' }, encoding: 'utf8',
+  });
+  assert.equal(noHub.status, 0);
+  assert.equal(noHub.stdout, '');
 });
 
 test('hooks exit 0 quickly with no output when no hub is running', () => {
@@ -198,7 +222,7 @@ test('suggest_replies reaches the hub and rejects replies that are too long', as
   const hub = await fakeHub(dir);
   const client = new Client({ name: 'test', version: '0' });
   const transport = new StdioClientTransport({
-    command: process.execPath, args: [CHANNEL],
+    command: process.execPath, args: [SESSION],
     env: { ...process.env, CLAWDPET_HOME: dir, TMUX_PANE: '%9' }, stderr: 'ignore',
   });
   try {

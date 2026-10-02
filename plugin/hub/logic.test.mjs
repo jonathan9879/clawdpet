@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fc from 'fast-check';
 import {
-  sanitize, wrap, fitsScreen, joinOptions, parseVerdict, newState, applyEvent, computeScreen, decide, MODE,
+  promptFits, sanitize, wrap, fitsScreen, joinOptions, parseVerdict, newState, applyEvent, computeScreen, decide, MODE,
   PROMPT_COLS, PROMPT_LINES,
 } from './logic.mjs';
 
@@ -35,8 +35,13 @@ test('sanitize flags any text it had to alter so the device offers deny only', (
     ['pipe replaced', 'a | b', true],
     ['emoji replaced', 'ok 👍', true],
     ['truncated', 'x'.repeat(400), true],
+    ['cut right after a space', 'ab cd', true],
   ];
-  for (const [, input, changed] of cases) assert.equal(sanitize(input).changed, changed, input);
+  for (const [, input, changed] of cases) {
+    const max = input === 'ab cd' ? 3 : undefined;
+    assert.equal(sanitize(input, max).changed, changed, input);
+  }
+  assert.equal(sanitize('ab cd', 3).text, 'ab');
 });
 
 test('wrap never loses characters and respects the column width', () => {
@@ -133,17 +138,19 @@ test('phase events never clear a pending prompt', () => {
   }
 });
 
-test('the prompt clears on the matching PostToolUse, Stop, or a closed channel', () => {
+test('the prompt clears on the matching PostToolUse, Stop, or its hook going away', () => {
   const cases = [
     [{ type: 'posttool', key: '%1', tool: 'Bash' }, true],
     [{ type: 'posttool', key: '%1', tool: 'Read' }, false],
     [{ type: 'stop', key: '%1' }, true],
-    [{ type: 'channel_closed', key: '%1' }, true],
+    [{ type: 'perm_closed', key: '%1', request_id: 'abcde' }, true],
+    [{ type: 'perm_closed', key: '%1', request_id: 'zzzzz' }, false],
+    [{ type: 'session_end', key: '%1' }, true],
   ];
   for (const [ev, cleared] of cases) {
     const s = stateWithPrompt();
     applyEvent(s, ev);
-    assert.equal(s.sessions[0].pending === null, cleared, JSON.stringify(ev));
+    assert.equal((s.sessions[0]?.pending ?? null) === null, cleared, JSON.stringify(ev));
   }
 });
 
@@ -337,4 +344,14 @@ test('holding Up starts dictation and releasing it sends', () => {
   for (const action of ['voice', 'voice_up']) {
     assert.deepEqual(decide(s, shownFor(s), { token: 'h:1', action }), [{ type: 'voice', pane: '%7' }], action);
   }
+});
+
+test('promptFits accepts only prompts shown in full and unchanged', () => {
+  const cases = [
+    ['a short command', { description: 'List files', input_preview: '{"command":"ls"}' }, true],
+    ['a long command', { description: 'Run', input_preview: 'x'.repeat(400) }, false],
+    ['non-ASCII text', { description: 'Borrar café', input_preview: '{}' }, false],
+    ['the tool fields used by computeScreen', { desc: 'List', preview: '{"command":"ls"}' }, true],
+  ];
+  for (const [name, p, fits] of cases) assert.equal(promptFits(p), fits, name);
 });
