@@ -6,7 +6,7 @@ Paste everything below the line into Claude Code on the new Mac (a terminal `cla
 
 Set up **clawdpet** on this Mac. Clawdpet is a handheld ESP32-C6 device ("protobadge") that shows the Claude mascot and acts as a remote for Claude Code sessions: it mirrors session state (busy, needs you, done), approves or denies tool calls (hold A 1 s to allow, B to deny), answers AskUserQuestion questions, offers suggested replies, switches sessions, and starts voice dictation (hold Up to talk, release to send).
 
-Source code: REPO_URL (replace with the repository URL before pasting).
+Source code: https://github.com/jonathan9879/clawdpet
 
 ## How it works (read before acting)
 
@@ -26,7 +26,7 @@ Source code: REPO_URL (replace with the repository URL before pasting).
 
 ## Steps
 
-1. Clone the repo to `~/clawdpet` (or a folder the user prefers) and `cd` into it.
+1. Clone `https://github.com/jonathan9879/clawdpet` to `~/clawdpet` (or a folder the user prefers) and `cd` into it.
 2. **Device key.** The key must not pass through this chat. Ask the user to run these two commands themselves:
    - on the Mac that already runs clawdpet: `pbcopy < ~/.clawdpet/api_key` (or read it from `~/.clawdpet/api_key` and transfer it in a password manager)
    - on this Mac, after getting it onto the clipboard: `mkdir -p ~/.clawdpet && chmod 700 ~/.clawdpet && pbpaste > ~/.clawdpet/api_key && chmod 600 ~/.clawdpet/api_key`

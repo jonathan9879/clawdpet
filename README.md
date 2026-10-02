@@ -20,7 +20,7 @@ Pet moods: idle (looks around, hops, walks), busy (Claude is working), waiting (
 
 ## New Mac
 
-Paste [docs/NEW_MAC_PROMPT.md](docs/NEW_MAC_PROMPT.md) into Claude Code on the new Mac (fill in the repo URL). The device key is copied by clipboard, never through chat.
+Paste [docs/NEW_MAC_PROMPT.md](docs/NEW_MAC_PROMPT.md) into Claude Code on the new Mac (the repo URL is already filled in). The device key is copied by clipboard, never through chat.
 
 ## Firmware updates over WiFi
 
