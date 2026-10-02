@@ -6,7 +6,7 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { HOME_DIR, SOCKET, LOCK, CONFIG, KEY_FILE, CLAUDE_ARGS, TMUX_SESSION } from './paths.mjs';
+import { HOME_DIR, SOCKET, LOCK, CLAUDE_ARGS, TMUX_SESSION } from './paths.mjs';
 import { newState, applyEvent, computeScreen, sameScreen, parseVerdict, decide } from './logic.mjs';
 
 const require = createRequire(import.meta.url);
@@ -49,8 +49,14 @@ const releaseLock = () => {
 process.on('exit', releaseLock);
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
 
-const config = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
-const encryptionKey = fs.readFileSync(KEY_FILE, 'utf8').trim();
+// Device settings arrive from the plugin's userConfig through the channel
+// server's environment, which this process inherits.
+const config = { host: process.env.CLAWDPET_DEVICE_HOST || 'protobadge.local', port: 6053 };
+const encryptionKey = (process.env.CLAWDPET_DEVICE_KEY || '').trim();
+if (!encryptionKey) {
+  log('no device key configured; run /plugin configure clawdpet@clawdpet');
+  process.exit(1);
+}
 
 const state = newState();
 const channels = new Map(); // session key -> socket of its channel server

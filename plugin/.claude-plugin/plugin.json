@@ -1,14 +1,41 @@
 {
   "name": "clawdpet",
   "displayName": "Clawdpet",
-  "version": "0.1.0",
-  "description": "Handheld Claude pet that mirrors session state and approves tool calls from an ESPHome device",
-  "author": { "name": "clawdpet" },
+  "description": "Claude mascot pet on an ESP32 handheld that mirrors your sessions, approves tools, answers questions, suggests replies and starts voice input",
+  "author": {
+    "name": "clawdpet"
+  },
   "mcpServers": {
     "clawdpet": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/server/channel.mjs"]
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/server/channel.mjs"
+      ],
+      "env": {
+        "CLAWDPET_DEVICE_HOST": "${user_config.device_host}",
+        "CLAWDPET_DEVICE_KEY": "${user_config.device_key}"
+      }
     }
   },
-  "channels": [{ "server": "clawdpet", "displayName": "Clawdpet" }]
+  "channels": [
+    {
+      "server": "clawdpet",
+      "displayName": "Clawdpet"
+    }
+  ],
+  "userConfig": {
+    "device_host": {
+      "type": "string",
+      "title": "Device address",
+      "description": "Hostname or IP of the clawdpet device on your local network",
+      "default": "protobadge.local"
+    },
+    "device_key": {
+      "type": "string",
+      "title": "Device encryption key",
+      "description": "The base64 api.encryption.key from the device firmware (44 characters)",
+      "sensitive": true,
+      "required": true
+    }
+  }
 }

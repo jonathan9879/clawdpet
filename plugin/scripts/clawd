@@ -3,7 +3,7 @@
 # Sessions live in the tmux session "clawdpet" so the device can switch
 # between them, open new ones and trigger voice input.
 set -e
-CMD="claude --dangerously-load-development-channels plugin:clawdpet@clawdpet-local"
+CMD="claude --dangerously-load-development-channels plugin:clawdpet@clawdpet"
 
 if [ -n "$TMUX" ]; then
   exec $CMD "$@"

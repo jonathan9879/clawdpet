@@ -12,15 +12,24 @@ A Claude mascot on the protobadge (ESP32-C6) that mirrors your Claude Code sessi
 
 Pet moods: idle (looks around, hops, walks), busy (Claude is working), waiting (waves a flag and buzzes: needs you), done (stomps with confetti), asleep (no Mac linked).
 
-## Setup per Mac
+## Install on a Mac
 
-1. Copy the device key to `~/.clawdpet/api_key` (it must match `api.encryption.key` in the firmware).
-2. Run `./install.sh` (optional argument: device host, default `protobadge.local`).
-3. Start sessions with `clawd` instead of `claude`. Confirm the one-time "development channels" warning.
+In a terminal:
 
-## New Mac
+```bash
+claude plugin marketplace add jonathan9879/clawdpet
+claude plugin install clawdpet@clawdpet
+```
 
-Paste [docs/NEW_MAC_PROMPT.md](docs/NEW_MAC_PROMPT.md) into Claude Code on the new Mac (the repo URL is already filled in). The device key is copied by clipboard, never through chat.
+Then in a Claude Code session:
+
+```
+/plugin configure clawdpet@clawdpet     # device address and encryption key (stored in secure storage)
+/clawdpet:setup                          # tmux, the clawd launcher, voice key, connection test
+```
+
+Start sessions with `clawd` instead of `claude`. The Mac must be on the same network as the device.
+
 
 ## Firmware updates over WiFi
 
@@ -37,7 +46,8 @@ Needs `~/.clawdpet/firmware.env`, `api_key`, `ota_password` and `secrets.yaml`. 
 
 - `firmware/protobadge.yaml`: ESPHome config with `__PLACEHOLDER__` values; `firmware/flash.sh` fills them from `~/.clawdpet`.
 - `plugin/`: Claude Code plugin: channel server (`server/`), hooks (`hooks/`), hub (`hub/`).
-- `bin/clawd`: launcher that keeps sessions in the `clawdpet` tmux session.
+- `plugin/scripts/clawd`: launcher that keeps sessions in the `clawdpet` tmux session (copied to `~/.local/bin` by `/clawdpet:setup`).
+- `plugin/skills/setup`: the `/clawdpet:setup` skill.
 - `docs/PLAN.md`: design, security model and the open spikes.
 
 ## Tests

@@ -51,7 +51,7 @@ Decisions (from the user): device `protobadge`, Claude Code CLI sessions, WiFi o
 - Power: backlight dims after 60 s idle, off after 5 min; any button or new prompt wakes. Measure current in S1.
 
 ### 2. Claude Code plugin `clawdpet` (local marketplace directory, `/plugin install`)
-- Launch: `claude --dangerously-load-development-channels plugin:clawdpet@clawdpet-local` (the form that skips the allowlist and cannot be shadowed by a repo `.mcp.json`).
+- Launch: `claude --dangerously-load-development-channels plugin:clawdpet@clawdpet` (the form that skips the allowlist and cannot be shadowed by a repo `.mcp.json`).
 - Channel MCP server per session: `claude/channel` + `claude/channel/permission` + `tools`. Keyed by `TMUX_PANE`. Starts and stays up without the hub; spawns the hub detached if the socket is missing; reconnects.
   - Relays `permission_request` to the hub, emits the verdict only for a pending `request_id` the hub returns with its token.
 - Hooks (command, `async: true`, exit 0 within 200 ms when the hub is down): UserPromptSubmit/PreToolUse -> busy, PostToolUse (matching tool + input) / Stop -> clears that pane's pending item, Stop -> done, Notification permission_prompt|idle_prompt -> waiting, SessionStart -> re-key session_id for the pane, SessionEnd -> unregister.
