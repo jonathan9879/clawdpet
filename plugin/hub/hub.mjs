@@ -83,7 +83,8 @@ function connectDevice() {
     try {
       const entities = await conn.listEntitiesService();
       const show = entities.find((e) => e.component === 'Services' && e.entity.name === 'show');
-      const verdict = entities.find((e) => e.component === 'TextSensor' && e.entity.objectId === 'pet_verdict');
+      // ESPHome 2026.8+ sends an empty objectId, so entities are matched by name
+      const verdict = entities.find((e) => e.component === 'TextSensor' && e.entity.name === 'pet_verdict');
       if (!show || !verdict) throw new Error('device firmware has no show action or pet_verdict sensor');
       device.showKey = show.entity.key;
       device.showArgs = show.entity.argsList;
